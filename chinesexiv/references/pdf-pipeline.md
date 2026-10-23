@@ -24,9 +24,21 @@
 | §2–§6 公式/算法/定理整段丢失 | PDF 抽取把显示公式打成 glyph 碎片，凭笔记骨架写译稿时静默跳过 | 动笔前跑 `pdf_inventory.py` 列全编号公式/算法/定理清单并附原文碎片；译后跑 `pdf_audit.py coverage` 强制比对，MISSING 非空不得交付 |
 | 编译报 Missing $ / invalid character | 参考文献含数学斜体 Unicode 与控制字符 | `pdf_refs.py`：NFKD → 丢弃非 ASCII 与控制符 → 转义 `\ % & _ $ #` |
 | Overfull hbox 300pt+ | 参考文献长 URL/代码串不可断行 | 转义后在 `/ _ #` 后插 `\allowbreak{}`；导言加 `\emergencystretch{3em}` |
+| 紧贴节标题的图把「4.1 Traffic Measurement Module」等**节标题裁进图里** | 节标题既非散文也非图题，未被当作带上界、又进了并集 | `pdf_clip.py` 用**字号**识别节标题（首行为 `\\d+(\\.\\d+)*` 且 max span size ≥10pt：真标题 ~11pt，图内数字标签 ≤6pt，页码 ~9pt），将其排除出并集并作为 figure 带上界。**不可只用「首行是数字」判定**——会吃掉树节点/坐标轴数字标签把图切碎（已验证回归） |
+| paper 类表图里混入英文表题（与中文 \\caption 重复） | spec 适配时把「表裁切含题注」设成了无条件 | 题注包含仅对 **spec（allow_prefix）** 生效；paper 类 `top=cr.y1` 且 `cr` 不入候选集 |
 | 竖版/超大图**静默丢 caption**（numbers 报某图号缺失、但图存在且计数器已推进） | 图太高 → `Overfull \vbox … too high` → `[H]` 浮动体被丢、caption 未排版 | 编译日志除 hbox 外**必须 grep `Overfull \vbox.*too high`**；缩小该图 width（竖版图常需 ≤0.5\linewidth）直到 vbox 归零；numbers 门禁正是靠「缺号」暴露它 |
 | coverage 误报重建图/表「未包含」 | 原「Figure N」其实是表、被重建成 figure 内的 tabular；booktabs 表用描述性 `\label{tab:x}` 而非 `tab:N` | coverage 改为「裁剪 png 数 + 重建环境数 == 源数」的全局一致性判定，不再硬性要求每个 `figureN.png`/`tab:N` |
 | fidelity 误报裁剪表格/图内文字 | 裁剪的表体/图内矢量文字以 block 泄漏，数字在图片里、不在 tex | fidelity 先用 `find_tables()` 排除表区，再按 ACM 惯例排除**图题上方 / 表题下方 ±200pt 带内**的块 |
+| 整页零题注命中（fig/ 空、inventory 全 0、numbers vacuous） | 题注是 IEEE `Fig. N.`（句点、标签常独立成行）/ `TABLE 罗马`，而 clip/inventory/numbers 只认 ACM `Figure N:` | `doc_class.caption_style` 判 `ieee` 后三脚本自动走 IEEE 口径（仅当**无** ACM 冒号题注且有 IEEE 证据才启用，ACM 零回归）；**不再需要**手工规范化 _text.txt |
+| 跨栏图（figure\*）被裁成单栏、丢右半 | figure\* 的题注文本窄且左对齐，按题注中心 x 分栏误判单栏 | ieee 下单题注行若带内矢量框同时落左右两栏→整页宽；但若另一栏有表/图题注伸入本带（其 `y1 >= floor`），则该栏框属另一资产，不判跨栏 |
+| 图顶部图例/标签被切（如 KickTree Fig 1/2/10/12） | y<72 页眉阈值把图体矢量框排除出并集 | ieee 下矢量框/细线下界放宽到 y>=40；文字块仍按 72 过滤页眉 |
+| 本图混入上一张图残留（Fig 4 混 Fig 3、Fig 8 混 Fig 7） | 带顶落到页顶 | ieee 下已裁图体（clipped_bodies）作为后续图带上界 |
+| 表位图底部混入正文/参考文献首行（KickTree 表 4/5） | 手工框 y1 估到散文行 | y1 取「表体最后一条矢量横线 y1 + 少量 pad」，且必须 < 下一条散文块 y0；用 `get_drawings()` 的横线簇定位，勿目测 |
+| `find_tables()` 对无边框 booktabs 表返回空 | 无线框 | 不要依赖 find_tables 定位表体；用题注 y + get_drawings 横线簇 |
+| fidelity 报首页基金/稿件脚注缺数字 | 首页脚注含 Grant 号与单位邮编，属被指纹的散文块 | 译稿必须译出该脚注（含全部 Grant 号与邮编），否则 fidelity SUSPECT |
+| paper 类表图裁入下方正文段落（FlowTurbo 表 3 裁入 §5.3/5.4/5.5 全部正文） | `table_stop()` 只认 solid box 和 >10pt 间隙，ACM 表与正文间无 solid box 且间隙<10pt 时 prose 被误纳入表体 | `table_stop()` 新增 prose 检测：已积累表内容后，遇到宽度≥0.30×页宽且平均行长≥40 的块即判定为正文、停止扩展 |
+| paper 类表图底部残留英文表题（FlowTurbo 表 2 底部出现 "Table 3: Resource utilization…"） | caption block bbox 因 PDF 解析原因延伸至表数据区下方，或 caption 实际位于表下方，导致 `cr.y1` 不可靠 | paper 类表裁切新增二次防护：扫描候选块中是否含 caption-like 文本（匹配 `CAP_RE`），若有则以其 y0 收紧 crop 下界 |
+| 陈旧图未重裁导致已交付译文带旧版 clip bug（ROE/Spillway/NetPila/FlowTurbo 均曾发生） | clip 器加固后未重裁已产出译文的论文，早期一次性裁的图停留在旧版行为 | P6 验收新增⑥陈旧图检查（强制）：clip 器改动后必须重裁所有已产出译文的论文并逐张目视比对，差异者目视确认无截断再替换、重编译 |
 
 ## main_zh.tex 重建规范
 
@@ -56,6 +68,29 @@
 ## 硬案例：并排双轴图
 
 三张并排且带左右双轴的图（如 Dorado p477 的 Fig 17/18/19），图间留白（~4pt）小于图内部「plot→右轴」间隙（~6pt），最大间隙切分会把一张图从它自己的右轴处剖开：表现为左图右轴标签被切片、右图左缘渗入邻图右轴。最大间隙启发式无法区分二者。**处理：目视审计发现后手工框定**（Manual overrides），不要用全局参数去迁就（加内缩/加 slack 会切掉其他页的正常轴标签，已验证回归）。
+
+## IEEE / 类 IEEE 论文（caption_style == "ieee"）
+
+`doc_class.caption_style(pdf,start,end)` 在 paper 类内部再分 `acm` / `ieee`：
+**仅当完全没有 ACM 冒号题注、且存在 `Fig. N.` 独立行或 `TABLE 罗马` 行**才判 ieee，
+否则一律 acm——这是 paper 路径零回归的开关。spec 类返回 `spec` 不受影响。
+
+ieee 下已自动化的部分（勿再手工绕）：
+- `pdf_clip` 识别 `Fig. N.`（两行式 fullmatch / 单行块 `Fig. N. 大写标题`）与 `TABLE 罗马`；
+  正文交叉引用（`Fig. 8 shows…` 同行小写动词、多行）不会命中。
+- 跨栏图整页宽、y>=40 矢量框并入、已裁图体作带顶（见上表）。
+- `pdf_inventory` / `pdf_audit numbers` 按集合语义收 IEEE 题注（正文交叉引用只引用
+  已存在图号，不污染集合），门禁对 IEEE 真实非空。
+- `pdf_audit fidelity` 的图/表带排除同时认 IEEE 题注。
+
+ieee 下仍需手工的部分：
+- **表格**：clip 器对 ieee 只把表题注用于带上界、**不产出 tableN.png**（booktabs 无边框,
+  自动表体不可靠）。表格用位图手工框定（y1 用最后一条矢量横线）或重建为中文 LaTeX 表，
+  并把手工 rect 追加进 `fig/_clip_manifest.json`（fidelity/structure 靠它扣除表区）。
+- **首页脚注**：稿件日期 + 基金 Grant 号 + 单位邮编会被 fidelity 指纹，必须译出。
+- **排版**：`article` 类摘要标题需 `\renewcommand{\abstractname}{摘要}`；作者行人数多
+  必须拆行（否则溢出右 margin）；算法用非浮动 tabular 时 `\multicolumn` 表头行末尾必须
+  有 `\\`，且不要把 `\label` 放在 tabular 行内（会未定义引用/Extra alignment tab）。
 
 ## 硬案例：同一栏内的并排子图（最右一张渗进邻栏正文）
 

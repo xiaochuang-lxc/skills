@@ -80,6 +80,17 @@ def numbers(pdf, txt):
                             re.findall(r"^Figure\s+(\d+-\d+)\s+[A-Z0-9(]", norm, re.M)})
         want_t = sorted(set(want_t) | {int(x.split("-")[1]) for x in
                             re.findall(r"^Table\s+(\d+-\d+)\s+[A-Z0-9(]", norm, re.M)})
+    # IEEE/类 IEEE 题注（Fig. N. 独立行 / 单行式 / TABLE 罗马）：集合语义并入。
+    # 正文交叉引用只会引用已存在的图号，不会污染集合；ACM 文档这些模式不命中。
+    _lines = norm.splitlines()
+    ieee_f = {int(m.group(1)) for m in
+              (doc_class.IEEE_FIG_LABEL_RE.fullmatch(l) for l in _lines) if m}
+    ieee_f |= {int(m.group(1)) for m in
+               (doc_class.IEEE_FIG_ONELINE_RE.match(l) for l in _lines) if m}
+    ieee_t = {doc_class.roman2int(m.group(1)) for m in
+              (doc_class.IEEE_TAB_RE.fullmatch(l) for l in _lines) if m}
+    want_f = sorted(set(want_f) | ieee_f)
+    want_t = sorted(set(want_t) | {n for n in ieee_t if n})
     doc = pymupdf.open(pdf)
     got_f, got_t = [], []
     # 渲染侧只认题注行：行首 + 编号后要么到行尾、要么跟一个宽间隔（labelsep）。
@@ -440,6 +451,14 @@ def fidelity(pdf, start, end, tex_path, min_tok=2, ratio=0.7):
             cm = re.match(r"^(Figure|Table)\s+\d+:", first)
             if cm:
                 caps.append((cm.group(1), pymupdf.Rect(b["bbox"])))
+            else:
+                # IEEE/类 IEEE 题注：同样排除图/表带内的数字（它们在位图里）。
+                nl = len(b["lines"])
+                if (doc_class.IEEE_FIG_LABEL_RE.fullmatch(first)
+                        or (nl == 1 and doc_class.IEEE_FIG_ONELINE_RE.match(first))):
+                    caps.append(("Figure", pymupdf.Rect(b["bbox"])))
+                elif doc_class.IEEE_TAB_RE.fullmatch(first):
+                    caps.append(("Table", pymupdf.Rect(b["bbox"])))
 
         def in_asset_band(cx, cy):
             for kind, cr in caps:

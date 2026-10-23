@@ -19,6 +19,19 @@ import pymupdf
 
 PREFIX_CAP_RE = re.compile(r"^(Figure|Table)\s+\d+-\d+\s+[A-Z0-9(]")
 COLON_CAP_RE = re.compile(r"^(Figure|Table)\s+\d+:")
+# IEEE/类 IEEE 论文题注（paper 类内部的第二种风格）：
+#   图题标签独立成行 "Fig. 1."（两行式）；或单行块 "Fig. 11. Title..."（单行式）；
+#   表题为全大写罗马数字 "TABLE I"。正文交叉引用（"Fig. 8 shows ..."）同行带
+#   小写动词或多行，不会命中 fullmatch / 单行式规则。
+IEEE_FIG_LABEL_RE = re.compile(r"Fig\.\s*(\d+)\.")
+IEEE_FIG_ONELINE_RE = re.compile(r"Fig\.\s*(\d+)\.\s+[A-Z]")
+IEEE_TAB_RE = re.compile(r"TABLE\s+([IVX]+)")
+ROMAN = {"I": 1, "II": 2, "III": 3, "IV": 4, "V": 5, "VI": 6, "VII": 7,
+         "VIII": 8, "IX": 9, "X": 10, "XI": 11, "XII": 12}
+
+
+def roman2int(s):
+    return ROMAN.get(s.strip().upper())
 
 
 def block_lines(page):
@@ -57,6 +70,31 @@ def detect(pdf, start, end, sample=24):
     return "spec" if single else "paper"
 
 
+def caption_style(pdf, start, end, sample=24):
+    """paper 类内部的题注风格：'acm'（Figure N:）vs 'ieee'（Fig. N. / TABLE 罗马）。
+
+    仅当**完全没有** ACM 冒号题注、且存在 IEEE 题注证据时才判 'ieee'，
+    否则一律 'acm'——这是 paper 路径零回归承诺的开关：ACM 论文永远不会
+    走进 ieee 分支。spec 类直接返回 'spec'（其题注走章节前缀口径）。
+    """
+    if detect(pdf, start, end, sample) == "spec":
+        return "spec"
+    doc = pymupdf.open(pdf)
+    last = min(end, start - 1 + sample)
+    colon = ieee = 0
+    for p in range(start - 1, last):
+        for _, t in block_lines(doc[p]):
+            tt = t.replace("\u00a7", "").strip()
+            if COLON_CAP_RE.match(tt):
+                colon += 1
+            elif IEEE_FIG_LABEL_RE.fullmatch(tt) or IEEE_TAB_RE.fullmatch(tt):
+                ieee += 1
+    return "ieee" if (ieee and not colon) else "acm"
+
+
 if __name__ == "__main__":
     import sys
-    print(detect(sys.argv[1], int(sys.argv[2]), int(sys.argv[3])))
+    if len(sys.argv) > 4 and sys.argv[4] == "style":
+        print(caption_style(sys.argv[1], int(sys.argv[2]), int(sys.argv[3])))
+    else:
+        print(detect(sys.argv[1], int(sys.argv[2]), int(sys.argv[3])))

@@ -35,6 +35,9 @@ description: 把论文自动翻译为中文 PDF 的 ChineseXiv skill。触发后
 `spec` = 协议/标准/白皮书单栏）。类别决定题注正则、分栏策略与验收口径的分流；
 **paper 路径是零回归承诺区**，行为差异与 spec 专属规则见 `references/pdf-pipeline.md`
 末节，回归测试 `scripts/tests/test_doc_classes.py`（改任何脚本后必跑）。
+paper 内部再按 `scripts/doc_class.py PDF START END style` 分题注风格 `acm` / `ieee`：
+IEEE（`Fig. N.` 句点、`TABLE 罗马`）的裁图/清单/编号门禁已自动适配（仅当无 ACM 冒号
+题注且有 IEEE 证据才启用），细则见 `references/pdf-pipeline.md` 的 IEEE 一节。
 
 ```bash
 python3 {SKILL_DIR}/scripts/pdf_prep.py "$PDF" START END "$OUTPUT_DIR" "$PDF_NAME_EN_STEM"
@@ -42,21 +45,26 @@ python3 {SKILL_DIR}/scripts/pdf_prep.py "$PDF" START END "$OUTPUT_DIR" "$PDF_NAM
 
 它产出 `_text.txt`（栏感知阅读序）、`source/fig/*.png`（图与表）、英文子 PDF、`source/refs.tex`（数字键 rN 的 thebibliography）。**stdout 中以 `!!` 开头的行是裁不出的图题，必须逐条手工处理后才能继续**（方法见 `references/pdf-pipeline.md` 的 Manual overrides）。
 
-**P3 裁切目视审计（强制）。** 跑 `scripts/pdf_audit.py sheet "$OUTPUT_DIR/source/fig" /tmp/sheet` 并用 Read 逐张过目：截断、串图、英文图题残留、表格混入只能这样发现。发现问题先修裁切（重跑 pdf_prep 或手工框定），**不要带着坏图进翻译**。
+**P3 裁切目视审计（强制）。** 跑 `scripts/pdf_audit.py sheet "$OUTPUT_DIR/source/fig" /tmp/sheet` 并用 Read 逐张过目：截断、串图、英文图题残留、表格混入只能这样发现。发现问题先修裁切（重跑 pdf_prep 或手工框定），**不要带着坏图进翻译**。IEEE（style=ieee）的**表格不会自动裁切**（booktabs 无边框、自动表体不可靠）：须手工位图框定（y1 取表体最后一条矢量横线 y1+pad，且小于下一条散文块 y0，勿混入正文/参考文献首行）或重建为中文 LaTeX 表，并把 rect 追加进 `fig/_clip_manifest.json`（fidelity/structure 靠它扣除表区）。
 
 **P4 撰写 `source/main_zh.tex`。** 单栏重排、`[H]` 钉死浮动体、**一图一环境一表一环境且按原文顺序**（保证译文图号=原文图号）；导言固定件见 `references/pdf-pipeline.md`。**动笔前必须先跑 `scripts/pdf_inventory.py "$OUTPUT_DIR/_text.txt" --out "$OUTPUT_DIR/_inventory.json"`** 得到编号公式/算法/定理/引理/定义/图表清单（PDF 抽取会把显示公式打成 glyph 碎片，不列清单必丢公式）；翻译时逐条覆盖，公式用 `equation` 环境保持原编号顺序、算法用非浮动 tabular 逐行呈现。大文件分块写（Write 首段 + SearchReplace 以 `\end{document}` 为锚追加）。引用用 `\cite{rN}`，末尾 `\input{refs}`。
+IEEE/期刊类还要注意三点，否则 fidelity 或排版门禁会报：① 首页「稿件收到/修订/接受 +
+基金 Grant 号 + 作者单位邮编」脚注是被指纹的散文块，**必须译出**（含全部 Grant 号与
+邮编）；② `article` 类摘要标题默认英文，导言加 `\renewcommand{\abstractname}{摘要}`；
+③ 作者行人数多必须拆行（否则溢出右 margin）；算法用非浮动 tabular 时 `\multicolumn`
+表头行末尾必须有 `\\`，且勿把 `\label` 放在 tabular 行内（未定义引用/Extra alignment tab）。
 **同一本书分多批翻译时**（规范/标准类常见），在父目录维护 `glossary.md`（术语 → 中译，一行一条）：
 每批动笔前先读，结束后把新术语追加进去；否则第 2 批的「虚通道」到第 7 批会漂成「虚拟通道」。
 
 **P5 编译。** 同第四步：`compile.py "$OUTPUT_DIR/source" main_zh.tex "$OUTPUT_DIR/$PDF_NAME_ZH.pdf" --engine auto`；编译日志里 `Overfull \hbox` 与 `Overfull \vbox` 都必须归零（作者行拆行、`\emergencystretch`；竖版/超大图会因 `Overfull \vbox too high` 被 `[H]` 静默丢弃 caption、导致 numbers 报缺号，须缩小该图 width）。
 
-**P6 验收（强制，五项全过才交付）。** ① `scripts/pdf_audit.py coverage "$WORK_DIR/main_zh.tex" "$OUTPUT_DIR/_inventory.json"` 必须 COVERAGE OK（公式/算法/定理/图/表无遗漏，MISSING 列表为空）；② `scripts/pdf_audit.py structure "$PDF" START END "$WORK_DIR/main_zh.tex"` 必须 STRUCTURE OK（译稿段落数 ≥ 原文散文块数的 90%，防整段合并/丢失）；③ `scripts/pdf_audit.py fidelity "$PDF" START END "$WORK_DIR/main_zh.tex"` 必须 FIDELITY OK——它对每个含数字的原文散文块做「数字指纹」覆盖率检查（剔除引用编号、年份、节号、版权页），**段数对但内容被合并/丢句子时只有它能发现**，SUSPECT 列表逐条回原文补译；④ `scripts/pdf_audit.py numbers "$OUTPUT_DIR/$PDF_NAME_ZH.pdf" "$OUTPUT_DIR/_text.txt"` 必须全 OK；⑤ 渲染抽查并排图页与表格页目视。
+**P6 验收（强制，五项全过才交付）。** ① `scripts/pdf_audit.py coverage "$WORK_DIR/main_zh.tex" "$OUTPUT_DIR/_inventory.json"` 必须 COVERAGE OK（公式/算法/定理/图/表无遗漏，MISSING 列表为空）；② `scripts/pdf_audit.py structure "$PDF" START END "$WORK_DIR/main_zh.tex"` 必须 STRUCTURE OK（译稿段落数 ≥ 原文散文块数的 90%，防整段合并/丢失）；③ `scripts/pdf_audit.py fidelity "$PDF" START END "$WORK_DIR/main_zh.tex"` 必须 FIDELITY OK——它对每个含数字的原文散文块做「数字指纹」覆盖率检查（剔除引用编号、年份、节号、版权页），**段数对但内容被合并/丢句子时只有它能发现**，SUSPECT 列表逐条回原文补译；④ `scripts/pdf_audit.py numbers "$OUTPUT_DIR/$PDF_NAME_ZH.pdf" "$OUTPUT_DIR/_text.txt"` 必须全 OK；⑤ 渲染抽查并排图页与表格页目视；**⑥ 陈旧图检查（强制）**：若 `pdf_clip.py` 自上次裁切后有改动（查 git log 或对比 `scripts/pdf_clip.py` 的 mtime 与 `source/fig/` 中 png 的 mtime），必须用最新 clip 器重裁所有已产出译文的论文并逐张目视比对，否则早期一次性裁的图会停留在旧版行为（如把单栏图当整页宽裁、把右栏正文/邻表串进来、表裁入正文段落）。判据：重裁后与交付 fig 目录逐张比尺寸，差异者目视确认无截断再替换、重编译。ROE/Spillway/NetPila/FlowTurbo 均曾栽在此处。
 **spec 类追加三项门禁**（paper 类调用会自行 skip，两类互不影响）：
-⑥ `pdf_audit.py xrefs "$WORK_DIR/main_zh.tex"` 必须 XREFS OK——残留 `§` 或英文
+⑦ `pdf_audit.py xrefs "$WORK_DIR/main_zh.tex"` 必须 XREFS OK——残留 `§` 或英文
 `Section/Chapter/Figure/Table N` 都说明该处交叉引用没译成「第 N 节 / 图 N」；
-⑦ `pdf_audit.py footnotes "$PDF" START END "$WORK_DIR/main_zh.tex"` 必须 FOOTNOTES OK——
+⑧ `pdf_audit.py footnotes "$PDF" START END "$WORK_DIR/main_zh.tex"` 必须 FOOTNOTES OK——
 源脚注定义数 == `\footnote` 数，且 `\setcounter{footnote}{k}` 钉回的编号落在源编号集合内；
-⑧ `pdf_audit.py sections "$PDF" START END "$WORK_DIR/main_zh.tex"` 必须 SECTIONS OK——
+⑨ `pdf_audit.py sections "$PDF" START END "$WORK_DIR/main_zh.tex"` 必须 SECTIONS OK——
 源标题树（`pdf_outline.py` 提取）的每个编号都出现在译稿标题宏里，防整节漏译。
 **门禁判读注意**：`numbers` / `structure` / `inventory` 现在按类别分流；看到
 `WARN ... vacuous` 或 `WARN inventory all-zero` **不是通过**，是正则没吃到该文档的题注格式，

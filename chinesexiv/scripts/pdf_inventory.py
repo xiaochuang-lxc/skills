@@ -22,6 +22,8 @@ import argparse
 import json
 import re
 
+import doc_class
+
 PAGE_RE = re.compile(r"========== \[PAGE (\d+)\] ==========")
 EQ_RE = re.compile(r"^\((\d+)\)$")
 ALG_RE = re.compile(r"^Algorithm\s+(\d+)\s*(.*)$")
@@ -29,6 +31,14 @@ TH_RE = re.compile(r"^(Theorem|Lemma|Definition|Corollary|Proposition)\s+([A-Z]\
 FT_RE = re.compile(r"^(Figure|Table)\s+(\d+):")
 # 协议/标准类："Figure 7-132  Title"（无冒号、编号带章节前缀）。
 FT_PREFIX_RE = re.compile(r"^(Figure|Table)\s+(\d+-\d+)\s+(?=[A-Z0-9(])")
+
+
+def _add(lst, item):
+    """IEEE 题注在扁平文本里可能被正文交叉引用重复命中（如 "Fig. 1. Based on"），
+    按编号去重保证 source 计数不被虚增。"""
+    if any(x["n"] == item["n"] for x in lst):
+        return
+    lst.append(item)
 
 
 def main():
@@ -44,6 +54,10 @@ def main():
                 for l in lines]
     # 类别从文本自身判定：出现章节前缀题注即 spec，此时两种风格都收。
     spec = any(FT_PREFIX_RE.match(s) for s in stripped)
+    # IEEE/类 IEEE：无 ACM 冒号题注但存在 "Fig. N." 独立行 / "TABLE 罗马" 行。
+    ieee = (not spec) and (not any(FT_RE.match(s) for s in stripped)) and any(
+        doc_class.IEEE_FIG_LABEL_RE.fullmatch(s) or doc_class.IEEE_TAB_RE.fullmatch(s)
+        for s in stripped)
     page = 0
     inv = {"equations": [], "algorithms": [], "theorems": [], "figures": [], "tables": []}
     for i, raw in enumerate(lines):
@@ -108,6 +122,21 @@ def main():
         if m:
             inv["figures" if m.group(1) == "Figure" else "tables"].append(
                 {"n": int(m.group(2)), "page": page, "caption": s[:80]})
+            continue
+        if ieee:
+            mi = doc_class.IEEE_FIG_LABEL_RE.fullmatch(sc)
+            if mi is None:
+                mi = doc_class.IEEE_FIG_ONELINE_RE.match(sc)
+            if mi:
+                _add(inv["figures"], {"n": int(mi.group(1)), "page": page,
+                                      "caption": s[:80]})
+                continue
+            mtb = doc_class.IEEE_TAB_RE.fullmatch(sc)
+            if mtb:
+                n = doc_class.roman2int(mtb.group(1))
+                if n:
+                    _add(inv["tables"], {"n": n, "page": page, "caption": s[:80]})
+                continue
 
     summary = {k: (len(v) if k != "equations" else len(v)) for k, v in inv.items()}
     if not any(summary.values()):

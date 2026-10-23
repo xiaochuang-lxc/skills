@@ -47,6 +47,8 @@ def run(script, *args):
 
 PROSE = ("The quick brown fox jumps over the lazy dog and keeps running "
          "across the whole paragraph so that the block is long enough.")
+# 窄散文（宽 <0.7*页宽）：避免单行 PROSE 被 detect 误判为单栏 spec。
+PROSE_N = ("The quick brown fox jumps over the lazy dog and keeps running.")
 
 
 def make_paper(path):
@@ -102,6 +104,74 @@ def make_spec_torture(path):
     pg.insert_text((50, 610), "1. Terms like gen3 are ambiguous and this footnote line is long enough to count.", fontsize=8)
     pg.insert_text((50, 650), long_, fontsize=9)
     pg.insert_text((50, 690), "1.1 Subsection title here", fontsize=11)
+    doc.save(path)
+
+
+def make_ieee(path):
+    """IEEE 双栏：Fig. N. 两行式题注 + 跨栏图（figure*）+ TABLE 罗马 + 正文交叉引用。
+    坐标是断言的一部分（跨栏图两半矢量框分落左右栏），不要随手改。"""
+    doc = pymupdf.open()
+    pg = doc.new_page(width=612, height=792)
+    for x in (50, 320):
+        pg.insert_text((x, 120), PROSE, fontsize=9)
+        pg.insert_text((x, 140), PROSE, fontsize=9)
+    pg.draw_rect(pymupdf.Rect(60, 200, 280, 300))     # 跨栏图左半
+    pg.draw_rect(pymupdf.Rect(320, 200, 550, 300))    # 跨栏图右半
+    pg.insert_text((60, 320), "Fig. 1.", fontsize=10)
+    pg.insert_text((60, 332), "The algorithmic framework.", fontsize=10)
+    # 正文交叉引用（同行小写动词）不得被当题注
+    pg.insert_text((60, 360), "Fig. 1 shows the framework and more details here.", fontsize=9)
+    pg.insert_text((320, 60), "TABLE I", fontsize=10)
+    pg.insert_text((320, 72), "EXAMPLE RULE SET", fontsize=10)
+    doc.save(path)
+
+
+def make_ieee_top(path):
+    """图体矢量框顶到 y<72（页顶图例）：ieee 下应并入并集而非被页眉阈值切掉。"""
+    doc = pymupdf.open()
+    pg = doc.new_page(width=612, height=792)
+    pg.draw_rect(pymupdf.Rect(60, 50, 280, 150))
+    pg.insert_text((60, 170), "Fig. 1.", fontsize=10)
+    pg.insert_text((60, 182), "Top legend figure.", fontsize=10)
+    pg.insert_text((60, 220), PROSE_N, fontsize=9)
+    doc.save(path)
+
+
+def make_ieee_stack(path):
+    """同栏上下两张图：第二张带顶不得落到页顶混入第一张图体。"""
+    doc = pymupdf.open()
+    pg = doc.new_page(width=612, height=792)
+    pg.draw_rect(pymupdf.Rect(60, 100, 280, 180))
+    pg.insert_text((60, 190), "Fig. 1.", fontsize=10)
+    pg.insert_text((60, 202), "First figure.", fontsize=10)
+    pg.draw_rect(pymupdf.Rect(60, 230, 280, 300))
+    pg.insert_text((60, 310), "Fig. 2.", fontsize=10)
+    pg.insert_text((60, 322), "Second figure.", fontsize=10)
+    doc.save(path)
+
+
+def make_ieee_tablecol(path):
+    """右栏图 + 左栏表同带：左栏表框不得作为本图跨栏证据。"""
+    doc = pymupdf.open()
+    pg = doc.new_page(width=612, height=792)
+    pg.insert_text((60, 210), "TABLE I", fontsize=10)
+    pg.insert_text((60, 222), "Example rule set.", fontsize=10)
+    pg.draw_rect(pymupdf.Rect(60, 230, 280, 300))
+    pg.draw_rect(pymupdf.Rect(320, 230, 550, 300))
+    pg.insert_text((320, 310), "Fig. 1.", fontsize=10)
+    pg.insert_text((320, 322), "Right column figure with a much longer caption title here.", fontsize=10)
+    doc.save(path)
+
+
+def make_mixed(path):
+    """同时含 ACM 冒号题注与 IEEE 题注：必须保持 acm（零回归开关）。"""
+    doc = pymupdf.open()
+    pg = doc.new_page(width=612, height=792)
+    pg.insert_text((50, 120), PROSE_N, fontsize=9)
+    pg.insert_text((320, 150), PROSE_N, fontsize=9)
+    pg.draw_rect(pymupdf.Rect(60, 200, 280, 300))
+    pg.insert_text((60, 320), "Figure 1: ACM style caption", fontsize=10)
+    pg.insert_text((60, 360), "Fig. 2.", fontsize=10)
     doc.save(path)
 
 
@@ -310,6 +380,97 @@ def main():
     open(xtex_ok, "w").write("\\begin{document}\n详见第 6.32 节的定义，如图 1-1 所示。\n\\end{document}\n")
     r = run("pdf_audit.py", "xrefs", xtex_ok)
     check("xrefs OK on translated refs", r.returncode == 0 and "XREFS OK" in r.stdout, r.stdout[-200:])
+
+    # ---- IEEE 题注风格（paper 类内部第二种版式）----
+    ieee_pdf = os.path.join(tmp, "ieee.pdf")
+    make_ieee(ieee_pdf)
+    check("detect ieee still paper", doc_class.detect(ieee_pdf, 1, 1) == "paper")
+    check("caption_style ieee", doc_class.caption_style(ieee_pdf, 1, 1) == "ieee")
+    check("caption_style acm unchanged", doc_class.caption_style(paper_pdf, 1, 1) == "acm")
+    check("caption_style spec unchanged", doc_class.caption_style(spec_pdf, 1, 1) == "spec")
+    i_fig = os.path.join(tmp, "ifig")
+    r = run("pdf_clip.py", ieee_pdf, "1", "1", i_fig)
+    out = r.stdout
+    check("ieee clip finds Fig. N. caption",
+          os.path.exists(os.path.join(i_fig, "figure1.png")), out[-300:])
+    m = re.search(r"figure1 p1 .*clip=\((\d+),(\d+),(\d+),(\d+)\)", out)
+    check("ieee full-width figure not column-truncated",
+          bool(m) and (int(m.group(3)) - int(m.group(1))) > 0.7 * 612, out[-300:])
+    check("ieee does not auto-crop tables",
+          not os.path.exists(os.path.join(i_fig, "table1.png")))
+    check("ieee body cross-ref not a caption",
+          "figure2" not in out and out.count("figure1 p1") == 1, out[-300:])
+    i_txt = os.path.join(tmp, "ieee.txt")
+    run("pdf_extract.py", ieee_pdf, "1", "1", i_txt)
+    r = run("pdf_inventory.py", i_txt)
+    check("inventory counts ieee fig+table",
+          re.search(r'"figures":\s*1', r.stdout) and re.search(r'"tables":\s*1', r.stdout),
+          r.stdout[:200])
+    zh_i = os.path.join(tmp, "zhi.pdf")
+    d = pymupdf.open()
+    pg = d.new_page()
+    pg.insert_text((72, 200), "图 1: 算法框架", fontsize=11, fontname="china-s")
+    pg.insert_text((72, 240), "表 1: 示例规则集", fontsize=11, fontname="china-s")
+    d.save(zh_i)
+    r = run("pdf_audit.py", "numbers", zh_i, i_txt)
+    check("numbers real (non-vacuous) on ieee",
+          r.returncode == 0 and "OK figures: 1..1" in r.stdout and "OK tables: 1..1" in r.stdout,
+          r.stdout[:200])
+
+    # ---- IEEE 几何修正 ----
+    top_pdf = os.path.join(tmp, "ieeetop.pdf")
+    make_ieee_top(top_pdf)
+    r = run("pdf_clip.py", top_pdf, "1", "1", os.path.join(tmp, "tfig2"))
+    m = re.search(r"figure1 p1 .*clip=\((\d+),(\d+),(\d+),(\d+)\)", r.stdout)
+    check("ieee keeps figure boxes above y=72",
+          bool(m) and int(m.group(2)) <= 56, r.stdout[-300:])
+
+    stk_pdf = os.path.join(tmp, "ieeestack.pdf")
+    make_ieee_stack(stk_pdf)
+    r = run("pdf_clip.py", stk_pdf, "1", "1", os.path.join(tmp, "stkfig"))
+    m2 = re.search(r"figure2 p1 .*clip=\((\d+),(\d+),(\d+),(\d+)\)", r.stdout)
+    check("ieee stacked figure band top bounded (no bleed)",
+          bool(m2) and int(m2.group(2)) >= 200, r.stdout[-300:])
+
+    tc_pdf = os.path.join(tmp, "ieeetabcol.pdf")
+    make_ieee_tablecol(tc_pdf)
+    tc_fig = os.path.join(tmp, "tcfig")
+    r = run("pdf_clip.py", tc_pdf, "1", "1", tc_fig)
+    m3 = re.search(r"figure1 p1 .*clip=\((\d+),(\d+),(\d+),(\d+)\)", r.stdout)
+    check("ieee figure beside table stays column-width",
+          bool(m3) and int(m3.group(1)) > 300, r.stdout[-300:])
+    check("ieee table not auto-cropped (tablecol)",
+          not os.path.exists(os.path.join(tc_fig, "table1.png")))
+
+    mix_pdf = os.path.join(tmp, "mixed.pdf")
+    make_mixed(mix_pdf)
+    check("mixed acm+ieee stays acm (zero-regression switch)",
+          doc_class.caption_style(mix_pdf, 1, 1) == "acm")
+
+    # ---- IEEE inventory 去重 / 罗马表 / numbers 集合语义 ----
+    ietxt = os.path.join(tmp, "ieee_dedup.txt")
+    with open(ietxt, "w", encoding="utf-8") as f:
+        f.write("========== [PAGE 1] ==========\n"
+                "Fig. 1.\nThe algorithmic framework.\n"
+                "Fig. 1. Based on the framework we continue the discussion here.\n"
+                "Fig. 2.\nThe construction process.\n"
+                "Fig. 2 shows the construction time of data structures for various sets.\n"
+                "TABLE IV\nRESOURCE UTILIZATION FOR DIFFERENT RULE SETS\n")
+    r = run("pdf_inventory.py", ietxt)
+    check("inventory dedupes body cross-refs, maps Roman table",
+          re.search(r'"figures":\s*2', r.stdout) and re.search(r'"tables":\s*1', r.stdout),
+          r.stdout[:200])
+    zh_d = os.path.join(tmp, "zhd.pdf")
+    d = pymupdf.open()
+    pg = d.new_page()
+    pg.insert_text((72, 200), "图 1: 框架", fontsize=11, fontname="china-s")
+    pg.insert_text((72, 240), "图 2: 构建过程", fontsize=11, fontname="china-s")
+    pg.insert_text((72, 280), "表 4: 资源利用率", fontsize=11, fontname="china-s")
+    d.save(zh_d)
+    r = run("pdf_audit.py", "numbers", zh_d, ietxt)
+    check("numbers set-semantics with body cross-refs",
+          r.returncode == 0 and "OK figures: 1..2" in r.stdout and "OK tables" in r.stdout,
+          r.stdout[:200])
 
     # ---- 隔离断言：spec 门禁在 paper 类上必须 no-op ----
     r = run("pdf_audit.py", "xrefs", xtex, "paper")
