@@ -45,11 +45,40 @@ CAP_RE = re.compile(r"^(Figure|Table)\s+(\d+):")
 # 协议/标准类题注："Figure 7-132  Title"（无冒号、编号带章节前缀）。
 # 仅在 doc_class 判定为 spec 时启用，且要求编号后接大写/数字/括号开头的
 # 标题，以排除正文交叉引用（"Figure 1-2 shows ..." 是小写动词开头）。
-CAP_PREFIX_RE = re.compile(r"^(Figure|Table)\s+(\d+-\d+)\s+(?=[A-Z0-9(])")
+CAP_PREFIX_RE = re.compile(r"^(Figure|Table)\s+(\d+-\d+)(?=\s+(?:[-\u2013\u2014]\s+[A-Za-z0-9(]|[A-Z0-9(]))")
 MIN_PARA_CHARS = 60        # axis labels are short; paragraphs are long
 MIN_PARA_WIDTH_RATIO = 0.30  # two-column prose is ~0.41*page width
 MIN_PARA_LINE_CHARS = 40   # sub-label rows like "(a) X  (b) Y" are wide but ragged
 PAGE_PAD = 6
+COL_ALIGN_TOL = 4.0        # 节标题 x0 与栏左界的对齐容差（pt）
+
+
+def col_left_edges(para_rects):
+    """由段落左缘聚类出各栏左界。节标题总是顶栏左排版，而图内
+    数字行/居中块会缩进或居中——用对齐性把二者分开。"""
+    lefts = []
+    for x in sorted({round(r.x0) for r in para_rects}):
+        if not lefts or x - lefts[-1] > 20:
+            lefts.append(x)
+    return lefts
+
+
+def is_heading(t, size, x0, col_lefts):
+    """section/subsection headings ("4.1\\nTraffic Measurement Module") are
+    neither prose nor captions; if left in the union a figure sitting
+    directly under a heading captures the heading text. 两个判据缺一不可：
+    (1) 字号——首行 `\\d+(\\.\\d+)*` 且 max span size ≥10pt（真标题 ~11pt，
+    图内数字标签通常 ≤6pt）；(2) 栏左对齐——大字号图内数字行（如
+    PSN-PATH 图 4 的 10.7pt 「3 7 11 15 →⋯」行）仅靠字号会误判为节标题，
+    把图上半部切掉；真节标题的 x0 与栏左界偏差 ≤ COL_ALIGN_TOL。
+    页上无段落（无栏左参照）时回退为仅字号判据。"""
+    ls = [l.strip() for l in t.split("\n") if l.strip()]
+    if not (ls and re.fullmatch(r"\d+(?:\.\d+)*\.?", ls[0])
+            and len(t) < 120 and size >= 10.0):
+        return False
+    if not col_lefts:
+        return True
+    return any(abs(x0 - L) <= COL_ALIGN_TOL for L in col_lefts)
 
 
 CLIPPED = []          # (page, key, rect) —— 供 pdf_audit 扣除位图已承载的内容
@@ -83,11 +112,13 @@ def _ieee_match(tt, i, nlines):
     return None
 
 
-def text_blocks(page, allow_prefix=False, ieee=False):
+def text_blocks(page, allow_prefix=False, ieee=False, dot=False):
     """Return (blocks, captions); see module docstring for the per-line rule.
 
     allow_prefix 只在 spec 类文档打开：论文类保持仅冒号匹配的历史行为。
-    ieee 只在 caption_style=='ieee' 打开：识别 Fig. N. / TABLE 罗马 题注。"""
+    ieee 只在 caption_style=='ieee' 打开：识别 Fig. N. / TABLE 罗马 题注。
+    dot 只在 caption_style=='acmdot' 打开：识别 Figure N. / Table N. 题注；
+    题注与子图标签同块时（标签在前）把标签行退回 blocks，免得裁切漏掉图内文字。"""
     blocks, captions = [], []
     for b in page.get_text("dict")["blocks"]:
         if b.get("type") != 0:
@@ -102,6 +133,8 @@ def text_blocks(page, allow_prefix=False, ieee=False):
                 m = CAP_PREFIX_RE.match(tt)
             if not m and ieee:
                 m = _ieee_match(tt, i, len(texts))
+            if not m and dot:
+                m = doc_class.dot_caption(tt, i, len(texts))
             if m:
                 hit = (i, m)
                 break
@@ -111,6 +144,15 @@ def text_blocks(page, allow_prefix=False, ieee=False):
             for ln in lines[i + 1:]:
                 bb |= pymupdf.Rect(ln["bbox"])
             captions.append((bb, m))
+            if dot and i > 0:
+                # 子图标签行（"(a) …" "(b) …"）与题注同块：它们属于图体，
+                # 必须回到 blocks 参与并集，否则顶边会把它们切掉半截。
+                pre = pymupdf.Rect(lines[0]["bbox"])
+                for ln in lines[1:i]:
+                    pre |= pymupdf.Rect(ln["bbox"])
+                joined_pre = "\n".join(t for t in texts[:i] if t)
+                if joined_pre:
+                    blocks.append((pre, joined_pre))
             continue
         joined = "\n".join(t for t in texts if t)
         if joined:
@@ -132,12 +174,12 @@ def visual_boxes(page):
     return solid, thin
 
 
-def clip_page(page, pno, out, zoom, allow_prefix=False, ieee=False):
+def clip_page(page, pno, out, zoom, allow_prefix=False, ieee=False, dot=False):
     pw, ph = page.rect.width, page.rect.height
     # 页眉/页脚带宽度：ACM 论文页眉在 72pt 以上；而规范/标准类文档页眉只占 y<40，
     # 且表格/图常常顶到页顶（如 PCIe Table 2-9 题注在 y=55），用 72 会把它当页眉误杀。
     top_y = 40.0 if allow_prefix else 72.0
-    blocks, captions = text_blocks(page, allow_prefix, ieee)
+    blocks, captions = text_blocks(page, allow_prefix, ieee, dot)
     boxes, thin = visual_boxes(page)
     # ieee：图体矢量框可能顶到 y<72（页顶图例/标签），文字块仍按 top_y 过滤页眉。
     vtop = 40.0 if ieee else top_y
@@ -156,31 +198,34 @@ def clip_page(page, pno, out, zoom, allow_prefix=False, ieee=False):
     caption_rects = [r for r, _ in captions]
     para_rects = {id(r) for r, _ in paragraphs}
 
-    def is_heading(t, size):
-        # section/subsection headings ("4.1\nTraffic Measurement Module") are
-        # neither prose nor captions; if left in the union a figure sitting
-        # directly under a heading captures the heading text. Font size is the
-        # discriminator: headings ~11pt, figure-internal numeric labels <=6pt,
-        # folios ~9pt - a bare "first line is a number" test alone would eat
-        # tree-node / axis labels and shred the figure.
-        ls = [l.strip() for l in t.split("\n") if l.strip()]
-        return (bool(ls) and re.fullmatch(r"\d+(?:\.\d+)*\.?", ls[0])
-                and len(t) < 120 and size >= 10.0)
-
     _bsize = {}
     for b in page.get_text("dict")["blocks"]:
         if b.get("type") != 0:
             continue
         szs = [sp["size"] for ln in b["lines"] for sp in ln["spans"] if sp["text"].strip()]
         _bsize[(round(b["bbox"][0], 1), round(b["bbox"][1], 1))] = max(szs) if szs else 0.0
+    col_lefts = col_left_edges([r for r, _ in paragraphs])
     headings = [r for r, t in blocks
-                if is_heading(t, _bsize.get((round(r.x0, 1), round(r.y0, 1)), 0.0))]
+                if is_heading(t, _bsize.get((round(r.x0, 1), round(r.y0, 1)), 0.0),
+                              r.x0, col_lefts)]
     head_rects = {id(r) for r in headings}
     label_rects = [r for r, t in blocks
                    if id(r) not in para_rects and id(r) not in head_rects
                    and not re.fullmatch(r"[\d\s]+", t)]
     region = boxes + thin + label_rects      # union: frames included
     region_cut = boxes + label_rects         # gap detection: frames excluded
+
+    def center_ok(v, hx0, hx1):
+        """窗口归属：宽框（>0.70×页宽）只属整宽窗口；**跨界块**（x 范围跨越
+        窗口边界，如首页居中的作者单位块）也只属整宽窗口——否则其中心
+        落入栏窗口会把并集拽过栏界，裁切框进而视觉切进邻栏正文
+        （PSN-PATH fig1 实测：单位块中心 306.5 落入右栏窗口 (306,612)）。"""
+        if v.width > 0.70 * pw:
+            return hx0 == 0.0 and hx1 == pw
+        if (hx0, hx1) != (0.0, pw) and \
+                ((v.x0 < hx0 - 2 < v.x1) or (v.x0 < hx1 - 2 < v.x1)):
+            return False
+        return hx0 <= (v.x0 + v.x1) / 2 <= hx1
 
     def rows_of(rects):
         left, rows = list(rects), []
@@ -315,9 +360,15 @@ def clip_page(page, pno, out, zoom, allow_prefix=False, ieee=False):
     for cr, mt in captions:
         if mt.group(1) != "Table":
             continue
+        if dot:
+            # acmdot（EuroSys/acmart format=true）实测表体在题注**上方**
+            # （如 Solar-NP Table 1），向下扩展会把题注以下的正文当成表体，
+            # 得到的 table_body 又会错当后续图的带上界。故不产出表区，
+            # 表格交给位图手工框定或重建为中文 LaTeX 表（同 ieee 的处置）。
+            continue
         hx0, hx1 = windows[id(cr)]
         cand = [v for v in region + label_rects + [r for r, _ in paragraphs] + [cr]
-                if v.y0 >= cr.y0 - 2 and hx0 <= (v.x0 + v.x1) / 2 <= hx1]
+                if v.y0 >= cr.y0 - 2 and center_ok(v, hx0, hx1)]
         if not cand:
             continue
         stop = table_stop(cand, cr, ph - 45.0)
@@ -340,7 +391,8 @@ def clip_page(page, pno, out, zoom, allow_prefix=False, ieee=False):
             if kind == "Table":
                 # ieee：表格交给手工位图/重建（见 references），自动裁切仅用于
                 # 给下方图提供带上界，不产出 tableN.png，避免不可靠的表位图。
-                if ieee:
+                # dot：同上，且本风格的表体在题注上方，向下裁切必错。
+                if ieee or dot:
                     continue
                 # spec 类：表以位图交付且无独立 \caption，裁切必须包含题注
                 # （top 用 cr.y0、cr 入候选集），否则题注被裁切框底边切断。
@@ -354,7 +406,7 @@ def clip_page(page, pno, out, zoom, allow_prefix=False, ieee=False):
                     extra = []
                 cand = [v for v in region + label_rects + [r for r, _ in paragraphs] + extra
                         if v.y0 >= top - 2 and v.y1 <= bottom + 2
-                        and hx0 <= (v.x0 + v.x1) / 2 <= hx1]
+                        and center_ok(v, hx0, hx1)]
                 if cand:
                     stop = table_stop(cand, cr, bottom)
                     cand = [v for v in cand if v.y1 <= stop + 2]
@@ -434,9 +486,7 @@ def clip_page(page, pno, out, zoom, allow_prefix=False, ieee=False):
                 def in_window(v):
                     if not (v.y0 >= top - 2 and v.y1 <= cr.y0 + 4):
                         return False
-                    if v.width > 0.70 * pw:
-                        return hx0 == 0.0 and hx1 == pw
-                    return hx0 <= (v.x0 + v.x1) / 2 <= hx1
+                    return center_ok(v, hx0, hx1)
 
                 cand = [v for v in region if in_window(v)]
                 if not cand:
@@ -459,6 +509,14 @@ def clip_page(page, pno, out, zoom, allow_prefix=False, ieee=False):
                 crop = pymupdf.Rect(max(u.x0 - PAGE_PAD, 0),
                                     max(u.y0 - PAGE_PAD, top - (15 if allow_prefix else 0)),
                                     min(u.x1 + PAGE_PAD, pw), cr.y0 - 1.5)
+                # 裁切顶边夹到跨界文本块（如首页居中作者单位块）之下：它们被
+                # center_ok 排除出并集，但其尾部仍可能落在裁切视觉范围内
+                # （PSN-PATH fig1 实测：单位块尾迹残留裁切图左上角）。
+                for v in label_rects + [r for r, _ in paragraphs]:
+                    if (v.x0 < hx0 - 2 < v.x1 or v.x0 < hx1 - 2 < v.x1) \
+                            and v.y1 <= cr.y0 + 1 and v.x1 > crop.x0 \
+                            and v.x0 < crop.x1 and v.y1 > crop.y0:
+                        crop.y0 = v.y1 + 1
                 if crop.width < 40 or crop.height < 28:
                     print(f"!! {kind.lower()}{num} p{pno}: degenerate {crop}", flush=True)
                     continue
@@ -489,11 +547,13 @@ def main():
     os.makedirs(a.outdir, exist_ok=True)
     doc = pymupdf.open(a.pdf)
     allow_prefix = doc_class.detect(a.pdf, a.start, a.end) == "spec"
-    ieee = (not allow_prefix) and \
-        doc_class.caption_style(a.pdf, a.start, a.end) == "ieee"
+    style = "spec" if allow_prefix else doc_class.caption_style(a.pdf, a.start, a.end)
+    ieee = style == "ieee"
+    dot = style == "acmdot"
     total = 0
     for pno in range(a.start, a.end + 1):
-        total += clip_page(doc[pno - 1], pno, a.outdir, a.zoom, allow_prefix, ieee)
+        total += clip_page(doc[pno - 1], pno, a.outdir, a.zoom,
+                           allow_prefix, ieee, dot)
     if total == 0:
         # 静默空产出比报错更危险：fig/ 为空但管线会继续走到翻译。
         print(f"!! NO CAPTION MATCHED in pages {a.start}..{a.end}: fig/ is empty. "
@@ -501,7 +561,7 @@ def main():
               flush=True)
         raise SystemExit(2)
     print(f"done ({total} captions, class={'spec' if allow_prefix else 'paper'}, "
-          f"style={'spec' if allow_prefix else ('ieee' if ieee else 'acm')})")
+          f"style={style})")
     # 落一份裁切清单：下游 structure/fidelity 需要知道哪些页区已由位图承载，
     # 否则表格/图内部的列表项会被当成「漏译的散文块」误报。
     import json

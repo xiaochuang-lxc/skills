@@ -1,0 +1,7 @@
+// 计数器值直方图：rising 在沿前一索引触发，采到的是沿前（setup）值
+// 数组缺失键读作 0，hist 自动创建；注意不能写 hist[k] += 1（文法不支持）
+// 运行: wawk hist.wawk /Users/feng/Desktop/Code/wal_eh/examples/basics/counter.fst
+// 期望输出（键为字符串形式的计数值）:
+//   counter histogram: {("0" 8) ("1" 3) ("2" 3) ("3" 2) ... ("15" 2)}
+rising(tb.dut.clk): { hist[tb.dut.counter] = hist[tb.dut.counter] + 1; }
+END: { print("counter histogram: ", hist); }

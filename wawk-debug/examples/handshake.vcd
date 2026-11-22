@@ -1,0 +1,55 @@
+$date Nov 22 2026 $end
+$version test $end
+$timescale 1ns $end
+$scope module tb $end
+$var wire 1 ! clk $end
+$var wire 1 " valid $end
+$var wire 1 # ready $end
+$var wire 8 $ data [7:0] $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+0"
+0#
+bxxxxxxxx $
+#5
+1!
+b00001010 $
+1"
+#10
+0!
+#15
+1!
+1#
+#20
+0!
+0#
+b00001011 $
+#25
+1!
+#30
+0!
+1#
+#35
+1!
+0"
+bxxxxxxxx $
+#40
+0!
+0#
+#45
+1!
+b00001100 $
+1"
+#50
+0!
+1#
+#55
+1!
+#60
+0!
+0"
+0#
+#65
+1!

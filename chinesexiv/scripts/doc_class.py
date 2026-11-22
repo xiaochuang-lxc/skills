@@ -17,7 +17,7 @@ import re
 
 import pymupdf
 
-PREFIX_CAP_RE = re.compile(r"^(Figure|Table)\s+\d+-\d+\s+[A-Z0-9(]")
+PREFIX_CAP_RE = re.compile(r"^(Figure|Table)\s+\d+-\d+\s+(?:[-\u2013\u2014]\s+[A-Za-z0-9(]|[A-Z0-9(])")
 COLON_CAP_RE = re.compile(r"^(Figure|Table)\s+\d+:")
 # IEEE/类 IEEE 论文题注（paper 类内部的第二种风格）：
 #   图题标签独立成行 "Fig. 1."（两行式）；或单行块 "Fig. 11. Title..."（单行式）；
@@ -26,8 +26,29 @@ COLON_CAP_RE = re.compile(r"^(Figure|Table)\s+\d+:")
 IEEE_FIG_LABEL_RE = re.compile(r"Fig\.\s*(\d+)\.")
 IEEE_FIG_ONELINE_RE = re.compile(r"Fig\.\s*(\d+)\.\s+[A-Z]")
 IEEE_TAB_RE = re.compile(r"TABLE\s+([IVX]+)")
+# EuroSys / acmart `format=true` 风格题注："Figure 1. Solar-NP architecture."
+# （句点而非冒号，编号是阿拉伯数字，表题也写作 "Table N."）。它与 IEEE 的区别是
+# 表题不是全大写罗马数字、图题不缩写成 "Fig."，而且表体可能落在题注**上方**，
+# 故单列一种 'acmdot' 风格：题注识别走 dot 口径，几何路径仍沿用 ACM（零回归）。
+# 编号后必须接大写/数字/括号或破折号，以排除正文交叉引用（"Figure 2, each …"、
+# "Figure 5 shows …" 都不命中）。
+DOT_CAP_RE = re.compile(
+    r"^(Figure|Table)\s+(\d+)\.\s+(?:[-\u2013\u2014]\s+|[A-Za-z0-9(])")
 ROMAN = {"I": 1, "II": 2, "III": 3, "IV": 4, "V": 5, "VI": 6, "VII": 7,
          "VIII": 8, "IX": 9, "X": 10, "XI": 11, "XII": 12}
+
+
+def dot_caption(tt, i=0, nlines=1):
+    """acmdot 题注判定（仅 acmdot 风格启用）。句点式题注整块可能同时含子图标签行
+    （"(a) …" "(b) …" 在前、"Figure 5. …" 在后），故允许命中块首行或块末行；
+    块内既非首也非末的行不判为题注——那是散文换行恰好落在 "…in Table 1. Hardware…"
+    这类句边界上的情形。"""
+    m = DOT_CAP_RE.match(tt)
+    if not m:
+        return None
+    if nlines > 1 and i not in (0, nlines - 1):
+        return None
+    return m
 
 
 def roman2int(s):
@@ -71,17 +92,18 @@ def detect(pdf, start, end, sample=24):
 
 
 def caption_style(pdf, start, end, sample=24):
-    """paper 类内部的题注风格：'acm'（Figure N:）vs 'ieee'（Fig. N. / TABLE 罗马）。
+    """paper 类内部的题注风格：'acm'（Figure N:）vs 'ieee'（Fig. N. / TABLE 罗马）
+    vs 'acmdot'（Figure N. / Table N.，EuroSys 与 acmart format=true）。
 
-    仅当**完全没有** ACM 冒号题注、且存在 IEEE 题注证据时才判 'ieee'，
-    否则一律 'acm'——这是 paper 路径零回归承诺的开关：ACM 论文永远不会
-    走进 ieee 分支。spec 类直接返回 'spec'（其题注走章节前缀口径）。
+    仅当**完全没有** ACM 冒号题注时才可能离开 'acm'，且 ieee 证据优先于 dot——
+    这是 paper 路径零回归承诺的开关：ACM 论文永远不会走进 ieee/acmdot 分支。
+    spec 类直接返回 'spec'（其题注走章节前缀口径）。
     """
     if detect(pdf, start, end, sample) == "spec":
         return "spec"
     doc = pymupdf.open(pdf)
     last = min(end, start - 1 + sample)
-    colon = ieee = 0
+    colon = ieee = dot = 0
     for p in range(start - 1, last):
         for _, t in block_lines(doc[p]):
             tt = t.replace("\u00a7", "").strip()
@@ -89,7 +111,11 @@ def caption_style(pdf, start, end, sample=24):
                 colon += 1
             elif IEEE_FIG_LABEL_RE.fullmatch(tt) or IEEE_TAB_RE.fullmatch(tt):
                 ieee += 1
-    return "ieee" if (ieee and not colon) else "acm"
+            elif DOT_CAP_RE.match(tt):
+                dot += 1
+    if colon or not (ieee or dot):
+        return "acm"
+    return "ieee" if ieee else "acmdot"
 
 
 if __name__ == "__main__":

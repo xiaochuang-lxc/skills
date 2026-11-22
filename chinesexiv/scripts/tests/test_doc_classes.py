@@ -175,6 +175,102 @@ def make_mixed(path):
     doc.save(path)
 
 
+def make_mixed_dot(path):
+    """同时含 ACM 冒号题注与 acmdot 句点题注：必须保持 acm（零回归开关）。"""
+    doc = pymupdf.open()
+    pg = doc.new_page(width=612, height=792)
+    pg.insert_text((50, 120), PROSE_N, fontsize=9)
+    pg.insert_text((320, 150), PROSE_N, fontsize=9)
+    pg.draw_rect(pymupdf.Rect(60, 200, 280, 300))
+    pg.insert_text((60, 320), "Figure 1: ACM style caption", fontsize=10)
+    pg.draw_rect(pymupdf.Rect(320, 200, 560, 300))
+    pg.insert_text((320, 320), "Figure 2. Dot style caption", fontsize=10)
+    doc.save(path)
+
+
+def make_acmdot(path):
+    """EuroSys / acmart format=true 双栏：题注用句点（"Figure 1. Title"），
+    图体在题注上方（同 ACM），但**表体也在题注上方**（与 ACM 惯例相反），
+    题注还可与子图标签同块（标签在前）。坐标是断言的一部分，不要随手改。"""
+    doc = pymupdf.open()
+    pg = doc.new_page(width=612, height=792)
+    # 两栏散文错开基线，避免 PyMuPDF 把同行文字合成一个通栏块（会被 detect 误判单栏）
+    for x, dy in ((50, 0), (320, 4)):
+        for k in range(2):
+            pg.insert_text((x, 120 + dy + 20 * k), PROSE_N, fontsize=9)
+    # 左栏图 1：图体在上、句点题注在下
+    pg.draw_rect(pymupdf.Rect(60, 200, 280, 300))
+    pg.insert_text((60, 320), "Figure 1. Architecture of the chipset.", fontsize=10)
+    # 左栏图 2：子图标签与题注同一文本块（标签行在前，题注是末行）
+    pg.draw_rect(pymupdf.Rect(60, 380, 160, 440))
+    pg.draw_rect(pymupdf.Rect(170, 380, 280, 440))
+    assert pg.insert_textbox(pymupdf.Rect(58, 445, 300, 505),
+                             "(a) Baseline\n(b) Ours\n"
+                             "Figure 2. (Exp#1) Latency under load.", fontsize=9) >= 0
+    # 左栏散文：中间行恰好以 "Table 1. Hardware…" 开头（换行落在句边界），
+    # 既非块首也非块末，不得被当题注
+    assert pg.insert_textbox(pymupdf.Rect(58, 560, 300, 620),
+                             "the quick brown fox jumps over the lazy dog and keeps\n"
+                             "Table 1. Hardware features of chips differ a lot here,\n"
+                             "running across the whole paragraph so it stays prose", fontsize=9) >= 0
+    # 右栏表 1：表体在上、题注在下（本风格的关键差异）
+    pg.draw_rect(pymupdf.Rect(320, 200, 560, 280))
+    pg.insert_text((325, 230), "Switch Chips   Vendor A   Ours", fontsize=9)
+    pg.insert_text((325, 250), "Bandwidth   1.6 Tbps   1.2 Tbps", fontsize=9)
+    pg.insert_text((320, 300), "Table 1. Hardware features of existing chips.", fontsize=10)
+    # 右栏图 3：在表题注下方，带上界必须被表题注钉住，不得把表体渗进来
+    pg.draw_rect(pymupdf.Rect(320, 340, 560, 400))
+    pg.insert_text((320, 420), "Figure 3. (Exp#2) Throughput comparison.", fontsize=10)
+    # 正文交叉引用（无句点）不得成为题注
+    pg.insert_text((320, 460), "Figure 1 shows the architecture and more details here.", fontsize=9)
+    pg.insert_text((320, 480), "Table 1 lists the bandwidth and the memory size.", fontsize=9)
+    pg.insert_text((320, 700), "References", fontsize=10)
+    pg.insert_text((320, 720), "[1] Author, Title of the referenced work, 2026.", fontsize=9)
+    doc.save(path)
+
+
+def make_heading_torture(path):
+    """右栏图内含大字号（11pt）缩进数字行（首行纯数字）：不得被 is_heading
+    误判为节标题（否则图上半部被切，PSN-PATH 图 4 实测事故）。坐标是断言
+    的一部分，不要随手改。"""
+    doc = pymupdf.open()
+    pg = doc.new_page(width=612, height=792)
+    for x in (50, 320):                      # 两栏散文→栏左参照 {50, 320}
+        for y in (300, 312, 324):
+            pg.insert_text((x, y), PROSE_N, fontsize=9)
+    pg.draw_rect(pymupdf.Rect(320, 80, 560, 120))     # 图上半框
+    for i, y in enumerate((132, 144, 156, 168)):      # 缩进大字号数字行
+        pg.insert_text((360, y), ["3", "7", "11", "15"][i], fontsize=11)
+    pg.draw_rect(pymupdf.Rect(320, 175, 560, 205))    # 图下半框
+    pg.insert_text((320, 220), "Figure 1: Remapping example.", fontsize=10)
+    doc.save(path)
+
+
+def make_refs_headers(path):
+    """跨页参考文献 + 页眉页脚 + 附录：页眉不得混进引文，附录不得被吞进末条。"""
+    doc = pymupdf.open()
+    for p in range(3):
+        pg = doc.new_page(width=612, height=792)
+        pg.insert_text((50, 40), "SHORT TITLE OF THE PAPER", fontsize=9)
+        pg.insert_text((300, 40), "VENUS 26, Somewhere", fontsize=9)
+        pg.insert_text((50, 700), str(100 + p), fontsize=9)
+        if p == 0:
+            pg.insert_text((50, 120), PROSE, fontsize=9)
+            pg.insert_text((50, 200), "References", fontsize=10)
+            pg.insert_text((50, 220), "[1] A. Author. 2024. First referenced work title. "
+                                      "In Proc. of ACM TEST.", fontsize=9)
+        elif p == 1:
+            pg.insert_text((50, 120), "[2] B. Author. 2023. Second referenced work title. "
+                                      "In Proc. of ACM TEST.", fontsize=9)
+        else:
+            pg.insert_text((50, 120), "[3] C. Author. 2022. Third referenced work title. "
+                                      "In Proc. of ACM TEST.", fontsize=9)
+            pg.insert_text((50, 160), "Appendix A", fontsize=10)
+            pg.insert_text((50, 180), "EXTRA APPENDIX BODY THAT MUST NOT JOIN THE LAST ENTRY.",
+                           fontsize=9)
+    doc.save(path)
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="cxiv_test_")
     paper_pdf = os.path.join(tmp, "paper.pdf")
@@ -225,6 +321,34 @@ def main():
     r = run("pdf_refs.py", p_txt, refs2)
     check("paper References still parsed",
           r.returncode == 0 and "\\bibitem{r1}" in open(refs2, encoding="utf-8").read())
+
+    # ---- refs 页眉/附录污染（EuroSys 实测：页眉进引文、整段附录被吞进末条）----
+    rh_pdf = os.path.join(tmp, "refshead.pdf")
+    make_refs_headers(rh_pdf)
+    rh_txt = os.path.join(tmp, "refshead.txt")
+    run("pdf_extract.py", rh_pdf, "1", "3", rh_txt)
+    rh_refs = os.path.join(tmp, "rh.tex")
+    r = run("pdf_refs.py", rh_txt, rh_refs)
+    blob = open(rh_refs, encoding="utf-8").read() if os.path.exists(rh_refs) else ""
+    check("refs drops running headers",
+          "SHORT TITLE OF THE PAPER" not in blob and "VENUS 26" not in blob, blob[:200])
+    check("refs stops before appendix body",
+          "EXTRA APPENDIX BODY" not in blob, blob[-200:])
+    check("refs keeps all three entries",
+          all(f"\\bibitem{{r{n}}}" in blob for n in (1, 2, 3))
+          and "Third referenced work title" in blob, blob[:200])
+    # 破折号清洗用文本级 fixture：base-14 字体的 insert_text 会把 en dash 写成
+    # 中点，无法从 PDF 往返，故直接给 pdf_refs 喂含真 U+2013 的抽取文本。
+    dtxt = os.path.join(tmp, "dash.txt")
+    with open(dtxt, "w", encoding="utf-8") as f:
+        f.write("========== [PAGE 1] ==========\nReferences\n"
+                "[1] A. Author. 2024. Title of the work. ACM SIGCOMM CCR 44, 3 "
+                "(2014), 87\u201395.\n")
+    dref = os.path.join(tmp, "dash.tex")
+    run("pdf_refs.py", dtxt, dref)
+    dblob = open(dref, encoding="utf-8").read()
+    check("pdf_refs maps en-dash page range to '-' instead of gluing digits",
+          "87-95" in dblob and "8795" not in dblob, dblob[:200])
 
     # ---- inventory ----
     r = run("pdf_inventory.py", s_txt, "--out", os.path.join(tmp, "inv.json"))
@@ -472,6 +596,61 @@ def main():
           r.returncode == 0 and "OK figures: 1..2" in r.stdout and "OK tables" in r.stdout,
           r.stdout[:200])
 
+    # ---- acmdot（EuroSys / acmart format=true：句点题注 + 表体在题注上方）----
+    dot_pdf = os.path.join(tmp, "acmdot.pdf")
+    make_acmdot(dot_pdf)
+    check("detect acmdot still paper", doc_class.detect(dot_pdf, 1, 1) == "paper")
+    check("caption_style acmdot", doc_class.caption_style(dot_pdf, 1, 1) == "acmdot")
+    md_pdf = os.path.join(tmp, "mixeddot.pdf")
+    make_mixed_dot(md_pdf)
+    check("mixed acm+acmdot stays acm (zero-regression switch)",
+          doc_class.caption_style(md_pdf, 1, 1) == "acm")
+    d_fig = os.path.join(tmp, "dfig")
+    r = run("pdf_clip.py", dot_pdf, "1", "1", d_fig)
+    out = r.stdout
+    check("acmdot clip reports style=acmdot", "style=acmdot" in out, out[-300:])
+    check("acmdot clips dot captions figure1/2/3",
+          all(os.path.exists(os.path.join(d_fig, f"figure{n}.png")) for n in (1, 2, 3)),
+          out[-300:])
+    check("acmdot does not auto-crop tables (body sits above caption)",
+          not os.path.exists(os.path.join(d_fig, "table1.png")), out[-300:])
+    check("acmdot cross-refs are not captions",
+          "figure4" not in out and out.count("figure1 p1") == 1, out[-300:])
+    import pdf_clip
+    d_blocks, d_caps = pdf_clip.text_blocks(pymupdf.open(dot_pdf)[0], dot=True)
+    check("acmdot recognizes exactly fig1/2/3 + table1 as captions",
+          len(d_caps) == 4, str([c[1].group(0) for c in d_caps]))
+    check("acmdot returns same-block sub-figure label lines to blocks",
+          any("(a) Baseline" in t for _, t in d_blocks)
+          and not any(t.startswith("Figure 2.") for _, t in d_blocks))
+    check("acmdot interior-line lookalike is not a caption",
+          not any(t.startswith("Table 1. Hardware features of chips differ")
+                  for _, t in d_blocks))
+    m = re.search(r"figure2 p1 .*clip=\((\d+),(\d+),(\d+),(\d+)\)", out)
+    check("acmdot figure2 covers both sub-figure rects and stops above caption",
+          bool(m) and int(m.group(1)) <= 56 and int(m.group(2)) <= 380
+          and int(m.group(3)) >= 284 and 435 <= int(m.group(4)) <= 471, out[-300:])
+    m = re.search(r"figure3 p1 .*clip=\((\d+),(\d+),(\d+),(\d+)\)", out)
+    check("acmdot figure below table caption excludes the table body",
+          bool(m) and int(m.group(2)) >= 300, out[-300:])
+    d_txt = os.path.join(tmp, "acmdot.txt")
+    run("pdf_extract.py", dot_pdf, "1", "1", d_txt)
+    r = run("pdf_inventory.py", d_txt)
+    check("inventory counts acmdot fig+table",
+          re.search(r'"figures":\s*3', r.stdout) and re.search(r'"tables":\s*1', r.stdout),
+          r.stdout[:200])
+    zh_d2 = os.path.join(tmp, "zhd2.pdf")
+    d = pymupdf.open()
+    pg = d.new_page()
+    for i, y in enumerate((160, 200, 240, 280), start=1):
+        label = "表 1: 硬件特性" if i == 4 else f"图 {i}: 句点式题注"
+        pg.insert_text((72, y), label, fontsize=11, fontname="china-s")
+    d.save(zh_d2)
+    r = run("pdf_audit.py", "numbers", zh_d2, d_txt)
+    check("numbers real (non-vacuous) on acmdot",
+          r.returncode == 0 and "OK figures: 1..3" in r.stdout and "OK tables: 1..1" in r.stdout,
+          r.stdout[:250])
+
     # ---- 隔离断言：spec 门禁在 paper 类上必须 no-op ----
     r = run("pdf_audit.py", "xrefs", xtex, "paper")
     check("xrefs no-op for paper class", r.returncode == 0 and "spec-only" in r.stdout,
@@ -482,6 +661,31 @@ def main():
     r = run("pdf_audit.py", "sections", paper_pdf, "1", "1", ttex_bad)
     check("sections no-op for paper class", r.returncode == 0 and "spec-only" in r.stdout,
           r.stdout[-200:])
+
+    # ---- 节标题误判回归（PSN-PATH 图 4 事故）：大字号缩进数字行不得当节标题 ----
+    import pdf_clip
+    check("is_heading: real heading aligned to column left",
+          pdf_clip.is_heading("4.1\nTraffic Measurement Module", 11.0, 318, [54, 318]))
+    check("is_heading: big indented numeric row in figure is NOT heading",
+          not pdf_clip.is_heading("3\n7\n11\n15 → ⋯", 10.7, 353, [54, 318]))
+    check("is_heading: small size rejects",
+          not pdf_clip.is_heading("4.1\nTitle", 9.0, 318, [54, 318]))
+    check("is_heading: fallback to size-only when no prose on page",
+          pdf_clip.is_heading("4.1\nTitle", 11.0, 318, []))
+    check("col_left_edges clusters two columns",
+          pdf_clip.col_left_edges([pymupdf.Rect(54, 0, 200, 10),
+                                   pymupdf.Rect(55, 0, 200, 10),
+                                   pymupdf.Rect(318, 0, 500, 10),
+                                   pymupdf.Rect(320, 0, 500, 10)]) == [54, 318])
+    ht_pdf = os.path.join(tmp, "heading.pdf")
+    make_heading_torture(ht_pdf)
+    ht_fig = os.path.join(tmp, "htfig")
+    r = run("pdf_clip.py", ht_pdf, "1", "1", ht_fig)
+    ht_png = os.path.join(ht_fig, "figure1.png")
+    ht_h = pymupdf.Pixmap(ht_png).height if os.path.exists(ht_png) else 0
+    # 完整图应覆盖 y80..205（≈137pt×3≈410px）；误判时只剩下半框（≈120px）
+    check("figure with big indented numeric row not truncated",
+          r.returncode == 0 and ht_h > 300, f"height={ht_h} {r.stdout[-200:]}")
 
     print(f"\n{len(FAILS)} failures" if FAILS else "\nALL TESTS PASSED")
     sys.exit(1 if FAILS else 0)

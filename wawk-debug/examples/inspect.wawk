@@ -1,0 +1,13 @@
+// 信号/作用域/规模盘点（FST 全量；VCD 的 SIGNALS 只含程序字面引用过的信号）
+// 运行: wawk inspect.wawk /Users/feng/Desktop/Code/wal_eh/examples/basics/counter.fst
+// 期望输出:
+//   signals: ("tb.overflow" "tb.clk" "tb.reset" "tb.dut.clk" "tb.dut.reset" "tb.dut.overflow" "tb.dut.counter")
+//   scopes: ("tb" "tb.dut")
+//   max-index: 80
+// 注意: 只有 BEGIN 的程序会崩（whenever 参数数），必须保留末尾哑语句 0: { }
+BEGIN: {
+  print("signals: ", SIGNALS);
+  print("scopes: ", SCOPES);
+  print("max-index: ", eval(parse("MAX-INDEX")));
+}
+0: { }

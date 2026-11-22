@@ -77,9 +77,9 @@ def numbers(pdf, txt):
     want_t = sorted({int(x) for x in re.findall(r"^Table\s+(\d+):", norm, re.M)})
     if spec:   # 协议/标准类：编号带章节前缀且无冒号
         want_f = sorted(set(want_f) | {int(x.split("-")[1]) for x in
-                            re.findall(r"^Figure\s+(\d+-\d+)\s+[A-Z0-9(]", norm, re.M)})
+                            re.findall(r"^Figure\s+(\d+-\d+)\s+(?:[-\u2013\u2014]\s+[A-Za-z0-9(]|[A-Z0-9(])", norm, re.M)})
         want_t = sorted(set(want_t) | {int(x.split("-")[1]) for x in
-                            re.findall(r"^Table\s+(\d+-\d+)\s+[A-Z0-9(]", norm, re.M)})
+                            re.findall(r"^Table\s+(\d+-\d+)\s+(?:[-\u2013\u2014]\s+[A-Za-z0-9(]|[A-Z0-9(])", norm, re.M)})
     # IEEE/类 IEEE 题注（Fig. N. 独立行 / 单行式 / TABLE 罗马）：集合语义并入。
     # 正文交叉引用只会引用已存在的图号，不会污染集合；ACM 文档这些模式不命中。
     _lines = norm.splitlines()
@@ -89,8 +89,16 @@ def numbers(pdf, txt):
                (doc_class.IEEE_FIG_ONELINE_RE.match(l) for l in _lines) if m}
     ieee_t = {doc_class.roman2int(m.group(1)) for m in
               (doc_class.IEEE_TAB_RE.fullmatch(l) for l in _lines) if m}
-    want_f = sorted(set(want_f) | ieee_f)
-    want_t = sorted(set(want_t) | {n for n in ieee_t if n})
+    # acmdot（EuroSys / acmart format=true）题注 "Figure N. Title" / "Table N. Title"。
+    # 编号后必须接大写/数字/括号，正文交叉引用（"Figure 5 shows…"）不命中。
+    dot_f = {int(m.group(2)) for m in
+             (doc_class.DOT_CAP_RE.match(l) for l in _lines)
+             if m and m.group(1) == "Figure"}
+    dot_t = {int(m.group(2)) for m in
+             (doc_class.DOT_CAP_RE.match(l) for l in _lines)
+             if m and m.group(1) == "Table"}
+    want_f = sorted(set(want_f) | ieee_f | dot_f)
+    want_t = sorted(set(want_t) | {n for n in ieee_t if n} | dot_t)
     doc = pymupdf.open(pdf)
     got_f, got_t = [], []
     # 渲染侧只认题注行：行首 + 编号后要么到行尾、要么跟一个宽间隔（labelsep）。
@@ -350,8 +358,8 @@ def structure(pdf, start, end, tex_path):
             r = pymupdf.Rect(b["bbox"])
             if r.y0 < 72 or r.y0 > ph - 45:
                 continue
-            if re.match(r"^(Figure|Table)\s+\d+:", txt):
-                continue
+            if re.match(r"^(Figure|Table)\s+\d+:", txt) or doc_class.DOT_CAP_RE.match(txt):
+                continue                       # caption，不计入散文块
             if len(re.findall(r"\([\d,.]+%\)", txt)) >= 2:
                 continue                       # table row, not prose
             if ls[0] in ("References", "REFERENCES"):
@@ -459,6 +467,16 @@ def fidelity(pdf, start, end, tex_path, min_tok=2, ratio=0.7):
                     caps.append(("Figure", pymupdf.Rect(b["bbox"])))
                 elif doc_class.IEEE_TAB_RE.fullmatch(first):
                     caps.append(("Table", pymupdf.Rect(b["bbox"])))
+                else:
+                    # acmdot：题注常不是块首行（子图标签 "(a)…(b)…" 在前），
+                    # 逐行找句点式题注，命中行自身作为带边界。
+                    for j, ln in enumerate(b["lines"]):
+                        t2 = "".join(sp["text"] for sp in ln["spans"]).strip()
+                        md = doc_class.dot_caption(t2, j, nl)
+                        if md:
+                            caps.append(("Figure" if md.group(1) == "Figure"
+                                         else "Table", pymupdf.Rect(ln["bbox"])))
+                            break
 
         def in_asset_band(cx, cy):
             for kind, cr in caps:
@@ -488,8 +506,12 @@ def fidelity(pdf, start, end, tex_path, min_tok=2, ratio=0.7):
                 continue                       # inside a clipped figure/table body
             if ls[0] in ("References", "REFERENCES"):
                 return _fidelity_report(suspects, checked)
-            if re.match(r"^(Figure|Table)\s+\d+:", txt):
-                continue
+            if (re.match(r"^(Figure|Table)\s+\d+:", txt) or doc_class.DOT_CAP_RE.match(txt)
+                    or any(doc_class.dot_caption(t2, j, len(ls))
+                           for j, t2 in enumerate(ls))):
+                continue                       # caption line, 由 \caption 承载
+                # 题注行可以在块末（子图标签 "(a)…(b)…" 在前），整块都是题注块，
+                # 其数字已在裁切位图与中文 \caption 里，不得当散文指纹。
             if txt.startswith(("This work is licensed", "ACM Reference Format",
                                "Permission to make", "©")):
                 continue                       # front matter, never translated
@@ -569,13 +591,30 @@ def footnotes(pdf, start, end, tex_path):
         return
     doc = pymupdf.open(pdf)
     src_nums = []
+
+    def page_lines(page):
+        for b in page.get_text("dict")["blocks"]:
+            if b.get("type") != 0:
+                continue
+            for ln in b["lines"]:
+                t = "".join(s["text"] for s in ln["spans"]).strip()
+                if t:
+                    yield t, max(s["size"] for s in ln["spans"])
+
     for pno in range(start, end + 1):
         # 逐行扫描而不是只看块首行：多条脚注常合并在同一文本块里，
         # 只看首行会漏掉第二条及以后的脚注。
-        for _, t in doc_class.block_lines(doc[pno - 1]):
+        lines = list(page_lines(doc[pno - 1]))
+        prose = [sz for t, sz in lines if len(t) >= 60]
+        if not prose:
+            continue
+        body = max(prose)   # 同页正文（叙述）字号
+        for t, sz in lines:
             t = t.replace("§", "").strip()
             m = re.match(r"^(\d+)\.\s+[A-Z(]", t)
-            if m and len(t) >= 40:
+            # 脚注/表注定义字号小于正文；正文里的编号列表项与正文同号，
+            # 不加字号判据会被误计为脚注定义（UE Spec 1.1 第 1 章即如此）。
+            if m and len(t) >= 40 and sz < body:
                 src_nums.append(int(m.group(1)))
     src_nums = sorted(set(src_nums))
     tex = open(tex_path, encoding="utf-8").read()
@@ -605,7 +644,12 @@ def sections(pdf, start, end, tex_path):
         print("sections gate is spec-only; skipped for paper class")
         return
     import pdf_outline
-    src = {it["num"] for it in pdf_outline.outline(pdf, start, end)}
+    items = pdf_outline.outline(pdf, start, end)
+    # 章前缀过滤：源 PDF 中较大字号的列表项（如「1. Unified Local」「3. AI Full…」）
+    # 会被大纲提取误判为标题；真实节编号必以本章前缀开头（如 2 / 2.1 / 2.4.11.2）。
+    prefix = items[0]["num"].split(".")[0] if items else ""
+    src = {it["num"] for it in items
+           if it["num"] == prefix or it["num"].startswith(prefix + ".")}
     tex = open(tex_path, encoding="utf-8").read()
     # 只扫正文：导言区的 \newcommand{\hdD}[1]{\paragraph{...#1}} 会被误读成编号 1
     tex = tex.split("\\begin{document}")[-1]

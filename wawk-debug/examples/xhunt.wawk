@@ -1,0 +1,14 @@
+// x/z 源头定位：find 拿全部未知态索引，谓词条件逐点打印（bool 安全，不 fail-fast）
+// 运行: wawk xhunt.wawk /Users/feng/Desktop/Code/wal_eh/examples/four-state/xz.vcd
+//       （换 xz.fst 输出完全相同）
+// 期望输出:
+//   tb.data x at indices: (0 3 5)
+//   tb.bus  z at indices: (0 4)
+//   TS 0: data=01xz
+//   TS 30: data=1x0z
+//   TS 50: data=xxxx
+BEGIN: {
+  print("tb.data x at indices: ", find(x?(tb.data)));
+  print("tb.bus  z at indices: ", find(z?(tb.bus)));
+}
+x?(tb.data): { printf("TS %d: data=%s\n", TS, tb.data); }

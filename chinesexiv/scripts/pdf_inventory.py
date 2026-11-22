@@ -30,7 +30,7 @@ ALG_RE = re.compile(r"^Algorithm\s+(\d+)\s*(.*)$")
 TH_RE = re.compile(r"^(Theorem|Lemma|Definition|Corollary|Proposition)\s+([A-Z]\.\d+|[A-Z]?\d+(?:\.\d+)?)")
 FT_RE = re.compile(r"^(Figure|Table)\s+(\d+):")
 # 协议/标准类："Figure 7-132  Title"（无冒号、编号带章节前缀）。
-FT_PREFIX_RE = re.compile(r"^(Figure|Table)\s+(\d+-\d+)\s+(?=[A-Z0-9(])")
+FT_PREFIX_RE = re.compile(r"^(Figure|Table)\s+(\d+-\d+)(?=\s+(?:[-\u2013\u2014]\s+[A-Za-z0-9(]|[A-Z0-9(]))")
 
 
 def _add(lst, item):
@@ -55,9 +55,14 @@ def main():
     # 类别从文本自身判定：出现章节前缀题注即 spec，此时两种风格都收。
     spec = any(FT_PREFIX_RE.match(s) for s in stripped)
     # IEEE/类 IEEE：无 ACM 冒号题注但存在 "Fig. N." 独立行 / "TABLE 罗马" 行。
-    ieee = (not spec) and (not any(FT_RE.match(s) for s in stripped)) and any(
+    no_colon = not any(FT_RE.match(s) for s in stripped)
+    ieee = (not spec) and no_colon and any(
         doc_class.IEEE_FIG_LABEL_RE.fullmatch(s) or doc_class.IEEE_TAB_RE.fullmatch(s)
         for s in stripped)
+    # acmdot（EuroSys / acmart format=true）："Figure 1. Title" / "Table 1. Title"，
+    # 句点而非冒号且编号是阿拉伯数字。同样只在无冒号、无 IEEE 证据时启用。
+    dot = (not spec) and (not ieee) and no_colon and any(
+        doc_class.DOT_CAP_RE.match(s) for s in stripped)
     page = 0
     inv = {"equations": [], "algorithms": [], "theorems": [], "figures": [], "tables": []}
     for i, raw in enumerate(lines):
@@ -136,6 +141,12 @@ def main():
                 n = doc_class.roman2int(mtb.group(1))
                 if n:
                     _add(inv["tables"], {"n": n, "page": page, "caption": s[:80]})
+                continue
+        if dot:
+            md = doc_class.DOT_CAP_RE.match(sc)
+            if md:
+                _add(inv["figures" if md.group(1) == "Figure" else "tables"],
+                     {"n": int(md.group(2)), "page": page, "caption": s[:80]})
                 continue
 
     summary = {k: (len(v) if k != "equations" else len(v)) for k, v in inv.items()}

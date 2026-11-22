@@ -24,7 +24,7 @@
 | §2–§6 公式/算法/定理整段丢失 | PDF 抽取把显示公式打成 glyph 碎片，凭笔记骨架写译稿时静默跳过 | 动笔前跑 `pdf_inventory.py` 列全编号公式/算法/定理清单并附原文碎片；译后跑 `pdf_audit.py coverage` 强制比对，MISSING 非空不得交付 |
 | 编译报 Missing $ / invalid character | 参考文献含数学斜体 Unicode 与控制字符 | `pdf_refs.py`：NFKD → 丢弃非 ASCII 与控制符 → 转义 `\ % & _ $ #` |
 | Overfull hbox 300pt+ | 参考文献长 URL/代码串不可断行 | 转义后在 `/ _ #` 后插 `\allowbreak{}`；导言加 `\emergencystretch{3em}` |
-| 紧贴节标题的图把「4.1 Traffic Measurement Module」等**节标题裁进图里** | 节标题既非散文也非图题，未被当作带上界、又进了并集 | `pdf_clip.py` 用**字号**识别节标题（首行为 `\\d+(\\.\\d+)*` 且 max span size ≥10pt：真标题 ~11pt，图内数字标签 ≤6pt，页码 ~9pt），将其排除出并集并作为 figure 带上界。**不可只用「首行是数字」判定**——会吃掉树节点/坐标轴数字标签把图切碎（已验证回归） |
+| 紧贴节标题的图把「4.1 Traffic Measurement Module」等**节标题裁进图里** | 节标题既非散文也非图题，未被当作带上界、又进了并集 | `pdf_clip.py` 用**字号**识别节标题（首行为 `\\d+(\\.\\d+)*` 且 max span size ≥10pt：真标题 ~11pt，图内数字标签 ≤6pt，页码 ~9pt），将其排除出并集并作为 figure 带上界。**不可只用「首行是数字」判定**——会吃掉树节点/坐标轴数字标签把图切碎（已验证回归）；**字号单独也不够**——大字号图内数字行（PSN-PATH 图 4 的 10.7pt 「3 7 11 15 →⋯」）会误判为节标题把图上半部切掉，故 `is_heading` 还需**栏左对齐**判据（x0 与 `col_left_edges` 栏左界偏差 ≤4pt；真节标题顶栏左排版，图内数字行缩进/居中），回归测试 `tests/test_doc_classes.py` 的 heading torture |
 | paper 类表图里混入英文表题（与中文 \\caption 重复） | spec 适配时把「表裁切含题注」设成了无条件 | 题注包含仅对 **spec（allow_prefix）** 生效；paper 类 `top=cr.y1` 且 `cr` 不入候选集 |
 | 竖版/超大图**静默丢 caption**（numbers 报某图号缺失、但图存在且计数器已推进） | 图太高 → `Overfull \vbox … too high` → `[H]` 浮动体被丢、caption 未排版 | 编译日志除 hbox 外**必须 grep `Overfull \vbox.*too high`**；缩小该图 width（竖版图常需 ≤0.5\linewidth）直到 vbox 归零；numbers 门禁正是靠「缺号」暴露它 |
 | coverage 误报重建图/表「未包含」 | 原「Figure N」其实是表、被重建成 figure 内的 tabular；booktabs 表用描述性 `\label{tab:x}` 而非 `tab:N` | coverage 改为「裁剪 png 数 + 重建环境数 == 源数」的全局一致性判定，不再硬性要求每个 `figureN.png`/`tab:N` |
@@ -39,6 +39,10 @@
 | paper 类表图裁入下方正文段落（FlowTurbo 表 3 裁入 §5.3/5.4/5.5 全部正文） | `table_stop()` 只认 solid box 和 >10pt 间隙，ACM 表与正文间无 solid box 且间隙<10pt 时 prose 被误纳入表体 | `table_stop()` 新增 prose 检测：已积累表内容后，遇到宽度≥0.30×页宽且平均行长≥40 的块即判定为正文、停止扩展 |
 | paper 类表图底部残留英文表题（FlowTurbo 表 2 底部出现 "Table 3: Resource utilization…"） | caption block bbox 因 PDF 解析原因延伸至表数据区下方，或 caption 实际位于表下方，导致 `cr.y1` 不可靠 | paper 类表裁切新增二次防护：扫描候选块中是否含 caption-like 文本（匹配 `CAP_RE`），若有则以其 y0 收紧 crop 下界 |
 | 陈旧图未重裁导致已交付译文带旧版 clip bug（ROE/Spillway/NetPila/FlowTurbo 均曾发生） | clip 器加固后未重裁已产出译文的论文，早期一次性裁的图停留在旧版行为 | P6 验收新增⑥陈旧图检查（强制）：clip 器改动后必须重裁所有已产出译文的论文并逐张目视比对，差异者目视确认无截断再替换、重编译 |
+| EuroSys / acmart `format=true` 论文整页零题注命中（fig/ 空、inventory 全 0、numbers vacuous） | 题注是句点式 `Figure 1. Title` / `Table 1. Title`（阿拉伯数字），既不是 ACM 冒号也不是 IEEE `Fig. N.`/`TABLE 罗马` | `doc_class.caption_style` 新增第三种风格 `acmdot`（仅当无冒号、无 IEEE 证据且有句点题注时启用），clip/inventory/audit 按 `dot` 口径识别；几何路径仍沿用 ACM，详见「acmdot」一节 |
+| 页眉被写进 `\bibitem`，且参考文献之后的整段附录被吞进最后一条引文 | `pdf_refs.py` 逐行拼接不辨页眉，且不知道引文在哪里结束（EuroSys'26 Solar-NP 实测：表 1 页眉进了 r6/r48，附录 A/B/C 全文进了 r87） | `pdf_refs.py` 按页标记统计每行出现的页集：某行在 ≥3 个不同页出现、且至少一页早于 References 所在页，即判为页眉/页脚丢弃；遇到短行 `^Appendix\b` 则 break。只靠「重复次数」不够：多条引文可能以同样的 `In Proc. of ACM SIGCOMM.` 收尾 |
+| 引文页码粘成一串（`87–95` 被写成 `8795`） | 清洗步骤「丢弃非 ASCII」把 en/em dash 直接抹掉，数字失去分隔 | `pdf_refs.py` 先把 `\u2013 \u2014 \u2212 \u00ad` 换成 `-`、弯引号换直引号，再丢非 ASCII。用**文本级** fixture 断言：base-14 字体的 `insert_text` 会把 en dash 写成中点，无法从 PDF 往返 |
+| 首页图裁入居中作者单位块与邻栏摘要残片（PSN-PATH 图 1） | 居中单位块跨越栏界，其中心落入栏窗口被并入并集；裁切顶边 pad 还会带入其尾迹 | `pdf_clip.py` 新增 `center_ok()`：跨界块（x 范围跨越窗口边界）只属整宽窗口；并在裁切后将顶边夹到跨界文本块之下 |
 
 ## main_zh.tex 重建规范
 
@@ -95,6 +99,27 @@ ieee 下仍需手工的部分：
 ## 硬案例：同一栏内的并排子图（最右一张渗进邻栏正文）
 
 两张子图并排、但**整行只占一栏**（如 Spillway p911 左栏内的 Fig 11+Fig 12），最右子图的图题 x1 仍 < 0.55×页宽。clip 器对「一行多图」把最右子图的横向窗口右边界设成整页宽 `pw`，于是它把**邻栏正文**纳入并集；更糟的是该正文成了纵向带的上界，把子图本体（在图题上方）排除，导致并集退化（`!! … degenerate`）或串栏。**不要用「把外边界收敛到栏宽 pw/2」来自动修**——这会切掉跨栏宽的双轴图右轴（Dorado Fig 17/18 已验证回归）。正确做法：目视审计发现后**手工框定该子图**（见下）。这是 clip 器的已知边界，非 bug。
+
+## EuroSys / acmart `format=true`（caption_style == "acmdot"）
+
+`doc_class.caption_style` 现在返回三种 paper 风格：`acm`（`Figure N:`）、`ieee`（`Fig. N.` / `TABLE 罗马`）
+与 `acmdot`（`Figure 1. Solar-NP architecture.` / `Table 1. Hardware features…`，句点 + 阿拉伯数字）。
+开关仍是零回归的：**只有完全没有冒号题注、也没有 IEEE 证据时**才可能判为 `acmdot`，
+且 ieee 证据优先于 dot。
+
+acmdot 与 ACM 的唯一版式差异（EuroSys'26 Solar-NP 实测）：**表体在题注上方**。
+因此 `pdf_clip.py` 在 dot 下：
+- pass 2 直接 `continue`（不向下扩展表体——那会把题注以下的正文当成表体，并把错的 rect 当后续图的带上界）；
+- pass 3 的 Table 分支同 ieee 处理：**不产出 tableN.png**，表格交给手工位图或重建为中文 LaTeX 表；
+- 图的路径与 ACM 完全相同（题注在下、图体在上）。
+
+题注识别走 `doc_class.dot_caption(tt, i, nlines)`：除句点式正则外，还要求命中行是**块首行或块末行**
+（真论文里子图标签 `(a)…(b)…` 常与题注同块且在前，题注是末行；而散文换行落在
+`…in Table 1. Hardware…` 这类句边界上是块内中间行，必须排除）。当 `i > 0` 时，
+`text_blocks` 会把题注之前的标签行退回 `blocks`，否则裁切会漏掉图内文字。
+
+回归测试：`scripts/tests/test_doc_classes.py` 的 `make_acmdot` / `make_mixed_dot` 夹具（含
+「表体在题注上方」「同块子图标签」「块内中间行假题注」「正文交叉引用不当题注」四类断言）。
 
 ## 陈旧图排查（执行纪律）
 

@@ -1,0 +1,25 @@
+// valid/ready 握手调试：每字节延迟 + stall 期间数据变化违例
+// 运行: wawk handshake.wawk handshake.vcd   （本目录自带测试波形，可离线自检）
+// 期望输出:
+//   TS 15: accept data=10 latency=1 cycles
+//   TS 25: WARNING data changed while stalled
+//   TS 55: accept data=12 latency=1 cycles
+//   accepted=2 avg-latency=1
+// 要点:
+//   - 沿后采样条件 tb.clk == 1, tb.clk@-1 == 0（rising() 是沿前一索引）
+//   - 否定用 == 0 而非 !x || ...（! 会吞掉后续 || 表达式）
+//   - 数据比较用 !==（case 不等，x 安全）；@-2 越界需 INDEX >= 2 守卫
+//   - 列表先 BEGIN 初始化 []；(INDEX差)/2 = 时钟周期数（波形含两个沿）
+BEGIN: { arrived = 0; delays = []; }
+tb.clk == 1, tb.clk@-1 == 0: {
+  // 新字节：valid 上升，或数据相对上一上升沿变化
+  if (tb.valid && (tb.valid@-1 == 0 || (INDEX >= 2 && tb.data !== tb.data@-2))) { arrived = INDEX; }
+  if (tb.valid && tb.ready) {
+    delays = append(delays, (INDEX - arrived) / 2);
+    printf("TS %d: accept data=%d latency=%d cycles\n", TS, tb.data, (INDEX - arrived) / 2);
+  }
+  if (tb.valid && tb.valid@-1 && !(tb.ready) && INDEX >= 2 && tb.data !== tb.data@-2) {
+    printf("TS %d: WARNING data changed while stalled\n", TS);
+  }
+}
+END: { printf("accepted=%d avg-latency=%d\n", length(delays), average(delays)); }
